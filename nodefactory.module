@@ -1,0 +1,217 @@
+<?php
+
+/**
+ * @file
+ * Nodefactory module.
+ *
+ * Creates many nodes of different types from files uploaded to one node.
+ */
+include_once('nodefactory.features.inc');
+
+/**
+ * Implement hook_field_access().
+ */
+function nodefactory_field_access($op, $field, $account, $node = NULL) {
+  if ($op == 'edit' && $field['type_name'] == 'media_batch') {
+    switch ($field['field_name']) {
+
+    case 'field_created_nodes':
+      // When editing any nodefactory media_batch, we don't want the
+      // appearance of the field_created_nodes reference field to confuse users.
+      // It is automatically populated by the rules.
+      return FALSE;
+
+    case 'field_attached_files':
+      // When editing a nodefactory media_batch that has already been saved to
+      // the database, the field_attached_files filefield widgets should be
+      // hidden to discourage users from trying to add new files to an already
+      // processed media_batch.
+      if ($node->nid) {
+        return FALSE;
+      }
+
+    }
+  }
+}
+
+/**
+ * Implementation of hook_menu().
+ */
+function nodefactory_menu() {
+  $items['admin/settings/nodefactory'] = array(
+   'title' => t('Node Factory settings'),
+   'description' => t('Choose the directory to import media files from.'),
+   'page callback' => 'drupal_get_form',
+   'page arguments' => array('nodefactory_settings'),
+   'access arguments' => array('administer site configuration'),
+   'file' => 'nodefactory.admin.inc',
+   'type' => MENU_NORMAL_ITEM,
+  );
+
+  return $items;
+}
+
+
+/**
+ * Implementation of hook_theme().
+ */
+function nodefactory_theme() {
+  return array(
+    'nodefactory_import_form' => array(
+      'arguments' => array('element' => NULL),
+      'file' => 'nodefactory.pages.inc',
+    ),
+  );
+}
+
+
+/**
+ * Implementation hook_form_FORMID_alter().
+ *
+ * @param <type> $form
+ * @param <type> $form_state
+ */
+function nodefactory_form_media_batch_node_form_alter(&$form, $form_state) {
+  module_load_include('pages.inc', 'nodefactory');
+
+  $form['import_files'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('Import Files'),
+    '#description' => t('Import files from <em>'. variable_get('nodefactory_import_path', '') . '</em>'),
+  );
+
+  $form['import_files'] = array_merge($form['import_files'], nodefactory_import_form());
+}
+
+
+/**
+ * Implementation of hook_nodeapi().
+ */
+function nodefactory_nodeapi(&$node, $op, $a3, $a4) {
+  switch ($op) {
+    case 'presave':
+      if ($node->type != 'media_batch') {
+        return;
+      }
+
+      if (is_array($node->files)) {
+        // Remove files that shouldn't be imported
+        foreach ($node->files as $key => $import) {
+          if (!$import['import']) {
+            unset($node->files[$key]);
+          }
+        }
+
+
+        // Move files that should be imported
+        $node->field_attached_files = array_merge($node->field_attached_files, nodefactory_save_imported_files($node->files));
+      }
+
+      // Invoke the ruleset to create new nodes
+      $batch = array();
+      foreach ($node->field_attached_files as $file) {
+        if (isset($file['fid'])) {
+          $args = array(
+            'nodefactory_1247428190_make_media_nodes',
+            $node,
+            $file['fid'],
+            drupal_strlen($file['data']['description']) ? $file['data']['description'] : $file['filename'],
+          );
+          $batch['operations'][] = array(
+            'rules_invoke_rule_set', $args,
+          );
+        }
+      }
+      if (count($batch['operations'])) {
+        $batch['finished'] = 'nodefactory_batch_finished';
+        $node->nodefactory_batch =& $batch;
+      }
+      break;
+    case 'insert':
+      if ($node->type == 'media_batch' && isset($node->nodefactory_batch)) {
+        batch_set($node->nodefactory_batch);
+      }
+      break;
+  }
+}
+
+
+/**
+ * Moved imported files into the correct directory and save them.
+ *
+ * @param $files
+ *   An array containing all the files that should be imported.
+ */
+function nodefactory_save_imported_files(&$files) {
+  global $user;
+
+  // Retrieve the correct file path
+  $settings = unserialize(db_result(db_query("SELECT widget_settings FROM {content_node_field_instance} WHERE type_name = 'media_batch' AND field_name = 'field_attached_files'")));
+  $file_path = $settings['file_path'];
+
+  // Replace possible tokens in the file path
+  // @see filefield_save_upload()
+  // @see filefield_widget_file_path().
+  $file_path = token_replace($file_path, 'global');
+  $file_path = token_replace($file_path, 'user', $user);
+
+  // Create the correct path if it doesn't exist
+  // TODO: Don't use document root. My dev site isn't in DOCUMENT_ROOT.
+  // Is this a better method?
+  // NOTE by Kyle: Thought I had DOCUMENT_ROOT . base_path().  My dev site isn't at document root either.
+  $full_path = dirname($_SERVER['SCRIPT_FILENAME']) . '/' . file_directory_path() . '/' . $file_path;
+  if (!is_dir($full_path)) {
+   mkdir($full_path, 0775, TRUE);
+  }
+
+
+  // Move files and write them into the file table
+  $fields = array();
+  foreach ($files as &$file) {
+    $newfile = new stdClass();
+    $newfile->filepath = file_destination(file_directory_path() . '/' . $file_path . '/' . $file['filename'], FILE_EXISTS_RENAME);
+    $newfile->filename = basename($newfile->filepath);
+
+    // Move the file into the correct directory
+    if (!file_move($file['filepath'], $file_path)) {
+      drupal_set_message('Could not move the file ' . check_plain($file['filepath']) . '.');
+      continue;
+    }
+
+    // Rename potentially executable files, to help prevent exploits.
+    if (preg_match('/\.(php|pl|py|cgi|asp|js)$/i', $newfile->filename) && (substr($newfile->filename, -4) != '.txt')) {
+      $newfile->filemime = 'text/plain';
+      $newfile->filepath .= '.txt';
+      $newfile->filename .= '.txt';
+    }
+
+    $newfile->uid = $user->uid;
+    $newfile->filemime = file_get_mimetype($newfile->filename);
+    $newfile->filesize = $file['filesize'];
+    $newfile->status = FILE_STATUS_PERMANENT;
+    $newfile->timestamp = time();
+
+    drupal_write_record('files', $newfile);
+
+    // Set the description so that it will be captured on node processing
+    $newfile->data = array();
+    $newfile->data['description'] = $file['description'];
+
+    $fields[] = (array)$newfile;
+    unset($file);
+  }
+
+  return $fields;
+}
+
+function nodefactory_batch_finished($success, $results, $operations) {
+  if ($success) {
+    drupal_set_message(t('The update has been performed.'));
+  }
+  else {
+    drupal_set_message(t('An error occurred and processing did not complete.'), 'error');
+    $message = format_plural(count($results), '1 item successfully processed:', '@count items successfully processed:');
+    $message .= theme('item_list', $results);
+    drupal_set_message($message);
+  }
+}

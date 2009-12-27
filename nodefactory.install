@@ -1,0 +1,20 @@
+<?php
+
+/**
+ * @file
+ * Installation hooks for nodefactory module.
+ */
+
+/**
+ * Implementation of hook_install()
+ */
+function nodefactory_install() {
+
+}
+
+/**
+ * Implementation of hook_uninstall()
+ */
+function nodefactory_uninstall() {
+
+}
