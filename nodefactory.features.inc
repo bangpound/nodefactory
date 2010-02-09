@@ -10,12 +10,30 @@ function nodefactory_content_default_fields() {
 }
 
 /**
+ * Implementation of hook_ctools_plugin_api().
+ */
+function nodefactory_ctools_plugin_api() {
+  module_load_include('inc', 'nodefactory', 'nodefactory.defaults');
+  $args = func_get_args();
+  return call_user_func_array('_nodefactory_ctools_plugin_api', $args);
+}
+
+/**
  * Implementation of hook_node_info().
  */
 function nodefactory_node_info() {
   module_load_include('inc', 'nodefactory', 'nodefactory.features.node');
   $args = func_get_args();
   return call_user_func_array('_nodefactory_node_info', $args);
+}
+
+/**
+ * Implementation of hook_strongarm().
+ */
+function nodefactory_strongarm() {
+  module_load_include('inc', 'nodefactory', 'nodefactory.defaults');
+  $args = func_get_args();
+  return call_user_func_array('_nodefactory_strongarm', $args);
 }
 
 /**
