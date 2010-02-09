@@ -10,9 +10,11 @@ function _nodefactory_node_info() {
       'module' => 'features',
       'description' => t('Upload multiple media files'),
       'has_title' => '0',
-      'title_label' => t(''),
+      'title_label' => '',
       'has_body' => '0',
-      'body_label' => t(''),
+      'body_label' => '',
+      'min_word_count' => '0',
+      'help' => '',
     ),
   );
   return $items;
